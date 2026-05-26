@@ -3,6 +3,7 @@ name = "remove-duplicate-files"
 version = "0.1.0"
 description = "Find and remove duplicate files with a React UI and native filesystem backend."
 authors = ["Tobias Gassmann"]
+license = "MIT"
 edition = "2021"
 
 [lib]
@@ -17,4 +18,3 @@ rayon = "1.11"
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11.2", features = [] }
 tauri-plugin-dialog = "2.7.1"
-
