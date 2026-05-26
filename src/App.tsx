@@ -10,36 +10,26 @@ import {
 } from 'lucide-react';
 import { useMemo, useReducer, useRef, useState } from 'react';
 import {
-  describeUnsafeRelationship,
-  getDirectoryRelationship,
   isAbortError,
-  isFileSystemAccessSupported,
-  pickDirectory,
-  requestDirectoryPermission,
   toErrorMessage,
 } from './lib/fileSystem';
-import type { LocalDirectoryHandle } from './lib/fileSystemTypes';
-import { deleteDuplicateFiles, type DeleteResult } from './lib/deleteDuplicates';
 import { formatBytes, pluralize } from './lib/format';
-import {
-  scanForDuplicates,
-  type DuplicateCandidate,
-  type DuplicateScanProgress,
-  type DuplicateScanResult,
-  type ScanIssue,
-} from './lib/scanner';
+import { getDuplicateFileService } from './services/runtime';
+import type {
+  DeleteResult,
+  DuplicateScanProgress,
+  DuplicateScanResult,
+  ScanIssue,
+  ServiceFolder,
+} from './services/types';
+import type { DuplicateCandidate } from './lib/scanner';
 
 type FolderRole = 'authoritative' | 'check';
 type AppStatus = 'idle' | 'scanning' | 'scan-complete' | 'deleting';
 
-interface FolderChoice {
-  name: string;
-  handle: LocalDirectoryHandle;
-}
-
 interface AppState {
-  authoritativeFolder?: FolderChoice;
-  checkFolder?: FolderChoice;
+  authoritativeFolder?: ServiceFolder;
+  checkFolder?: ServiceFolder;
   status: AppStatus;
   progress?: DuplicateScanProgress;
   scanResult?: DuplicateScanResult;
@@ -53,7 +43,7 @@ interface AppState {
 }
 
 type AppAction =
-  | { type: 'folder-selected'; role: FolderRole; folder: FolderChoice }
+  | { type: 'folder-selected'; role: FolderRole; folder: ServiceFolder }
   | { type: 'operation-error'; message: string }
   | { type: 'scan-started' }
   | { type: 'scan-progress'; progress: DuplicateScanProgress }
@@ -82,8 +72,9 @@ const initialState: AppState = {
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [confirmAcknowledged, setConfirmAcknowledged] = useState(false);
+  const service = useMemo(() => getDuplicateFileService(), []);
   const scanAbortRef = useRef<AbortController | null>(null);
-  const supported = isFileSystemAccessSupported();
+  const supported = service.isSupported();
 
   const selectableDuplicateIds = useMemo(
     () =>
@@ -131,18 +122,12 @@ export function App() {
 
   const handlePickFolder = async (role: FolderRole) => {
     try {
-      const handle = await pickDirectory(
-        role === 'authoritative' ? 'authoritative-folder' : 'check-folder',
-        'read',
-      );
+      const folder = await service.pickFolder(role);
 
       dispatch({
         type: 'folder-selected',
         role,
-        folder: {
-          name: handle.name,
-          handle,
-        },
+        folder,
       });
     } catch (error) {
       if (!isAbortError(error)) {
@@ -161,20 +146,19 @@ export function App() {
     dispatch({ type: 'scan-started' });
 
     try {
-      const relationship = await getDirectoryRelationship(
-        state.authoritativeFolder.handle,
-        state.checkFolder.handle,
+      const unsafeMessage = await service.validateFolders(
+        state.authoritativeFolder,
+        state.checkFolder,
       );
-      const unsafeMessage = describeUnsafeRelationship(relationship);
 
       if (unsafeMessage) {
         dispatch({ type: 'operation-error', message: unsafeMessage });
         return;
       }
 
-      const result = await scanForDuplicates(
-        state.authoritativeFolder.handle,
-        state.checkFolder.handle,
+      const result = await service.scan(
+        state.authoritativeFolder,
+        state.checkFolder,
         {
           signal: abortController.signal,
           onProgress: (progress) =>
@@ -208,19 +192,10 @@ export function App() {
     dispatch({ type: 'delete-started' });
 
     try {
-      const permission = await requestDirectoryPermission(
-        state.checkFolder.handle,
-        'readwrite',
-      );
-
-      if (permission !== 'granted') {
-        throw new Error('Read/write permission was not granted for the folder to check.');
-      }
-
-      const results = await deleteDuplicateFiles(candidatesToDelete, {
+      const results = await service.deleteDuplicates(candidatesToDelete, {
+        checkFolder: state.checkFolder,
         verifyBeforeDelete: state.verifyBeforeDelete,
-        onProgress: ({ result }) =>
-          dispatch({ type: 'delete-progress', result }),
+        onProgress: (result) => dispatch({ type: 'delete-progress', result }),
       });
 
       dispatch({ type: 'delete-finished', results });
@@ -240,7 +215,7 @@ export function App() {
         </div>
         <div className="trust-chip">
           <ShieldCheck aria-hidden="true" size={18} />
-          <span>No uploads</span>
+          <span>{service.label}</span>
         </div>
       </header>
 
@@ -598,7 +573,7 @@ function FolderPicker({
 }: {
   title: string;
   description: string;
-  folder?: FolderChoice;
+  folder?: ServiceFolder;
   disabled: boolean;
   onPick: () => void;
 }) {

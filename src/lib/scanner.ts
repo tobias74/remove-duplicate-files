@@ -52,6 +52,7 @@ export interface DuplicateCandidate {
   size: number;
   lastModified: number;
   authoritativePath: string;
+  authoritativeAbsolutePath?: string;
   authoritativeMatches: AuthoritativeMatch[];
   checkFile: WalkedFile;
   authoritativeFile: WalkedFile;
