@@ -18,3 +18,5 @@ npm run build
 ```
 
 The app never uploads file contents. It requests read/write permission only for the folder being checked, and only when deleting reviewed duplicate files.
+
+Duplicate detection compares files exactly in chunks after filtering by byte size. Chunk comparison runs through a small Web Worker pool so large scans keep the UI responsive. The delete step defaults to a faster metadata re-check; enable the verification checkbox before deletion to compare bytes again for extra safety.

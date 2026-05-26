@@ -51,7 +51,7 @@ describe('scanForDuplicates', () => {
     expect(result.skippedFileCount).toBe(1);
   });
 
-  it('records multiple authoritative matches for the same content', async () => {
+  it('stops after the first authoritative match for speed', async () => {
     const authoritative = new MockDirectoryHandle('authoritative', {
       'first.txt': 'shared',
       nested: {
@@ -65,8 +65,11 @@ describe('scanForDuplicates', () => {
     const result = await scanForDuplicates(authoritative, check);
 
     expect(result.duplicates).toHaveLength(1);
-    expect(result.duplicates[0].authoritativeMatches.map((match) => match.path).sort())
-      .toEqual(['first.txt', 'nested/second.txt']);
+    expect(result.duplicates[0].authoritativeMatches).toEqual([
+      {
+        path: 'first.txt',
+        size: 6,
+      },
+    ]);
   });
 });
-

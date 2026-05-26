@@ -211,8 +211,29 @@ input:focus-visible {
 .command-row {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 10px;
   margin: 18px 0;
+}
+
+.safety-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--panel);
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.safety-toggle input {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
 }
 
 .notice {
@@ -521,6 +542,13 @@ td {
   line-height: 1.5;
 }
 
+.confirm-note {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
 .confirm-check {
   display: flex;
   align-items: flex-start;
@@ -600,8 +628,12 @@ td {
     flex: 1 1 150px;
   }
 
+  .safety-toggle {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .issues-panel li {
     grid-template-columns: 1fr;
   }
 }
-

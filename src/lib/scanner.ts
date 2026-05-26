@@ -1,19 +1,24 @@
 import { forEachWithConcurrency } from './concurrency';
 import {
+  DEFAULT_COMPARE_CHUNK_SIZE,
+} from './byteCompare';
+import {
+  createFileComparator,
+  getDefaultCompareWorkerCount,
+} from './fileComparator';
+import {
   throwIfAborted,
   toErrorMessage,
   walkDirectory,
   type WalkedFile,
 } from './fileSystem';
-import { hashFile } from './hash';
 import type { LocalDirectoryHandle } from './fileSystemTypes';
 
 export type ScanPhase =
   | 'idle'
   | 'walking-authoritative'
   | 'walking-check'
-  | 'hashing-authoritative'
-  | 'hashing-check'
+  | 'comparing'
   | 'complete';
 
 export interface ScanIssue {
@@ -28,8 +33,8 @@ export interface DuplicateScanProgress {
   checkFiles: number;
   candidateFiles: number;
   skippedFiles: number;
-  hashedAuthoritativeFiles: number;
-  hashedCheckFiles: number;
+  comparedCheckFiles: number;
+  comparedPairs: number;
   duplicatesFound: number;
   issues: number;
   currentPath?: string;
@@ -38,7 +43,6 @@ export interface DuplicateScanProgress {
 export interface AuthoritativeMatch {
   path: string;
   size: number;
-  hash: string;
 }
 
 export interface DuplicateCandidate {
@@ -47,10 +51,10 @@ export interface DuplicateCandidate {
   name: string;
   size: number;
   lastModified: number;
-  hash: string;
   authoritativePath: string;
   authoritativeMatches: AuthoritativeMatch[];
   checkFile: WalkedFile;
+  authoritativeFile: WalkedFile;
 }
 
 export interface DuplicateScanResult {
@@ -64,7 +68,9 @@ export interface DuplicateScanResult {
 
 interface ScanOptions {
   signal?: AbortSignal;
-  hashConcurrency?: number;
+  compareConcurrency?: number;
+  compareChunkSize?: number;
+  workerCount?: number;
   onProgress?: (progress: DuplicateScanProgress) => void;
 }
 
@@ -80,8 +86,8 @@ export async function scanForDuplicates(
     checkFiles: 0,
     candidateFiles: 0,
     skippedFiles: 0,
-    hashedAuthoritativeFiles: 0,
-    hashedCheckFiles: 0,
+    comparedCheckFiles: 0,
+    comparedPairs: 0,
     duplicatesFound: 0,
     issues: 0,
   };
@@ -134,7 +140,7 @@ export async function scanForDuplicates(
   const skippedFileCount = checkWalk.files.length - candidateCheckFiles.length;
 
   report({
-    phase: 'hashing-check',
+    phase: 'comparing',
     authoritativeFiles: authoritativeWalk.files.length,
     checkFiles: checkWalk.files.length,
     candidateFiles: candidateCheckFiles.length,
@@ -142,129 +148,111 @@ export async function scanForDuplicates(
     currentPath: undefined,
   });
 
-  const hashConcurrency = options.hashConcurrency ?? 2;
-  const authoritativeHashIndexes = new Map<
-    number,
-    Map<string, WalkedFile[]>
-  >();
+  const compareConcurrency =
+    options.compareConcurrency ?? getDefaultCompareWorkerCount();
+  const comparator = createFileComparator({
+    workerCount: options.workerCount ?? compareConcurrency,
+    chunkSize: options.compareChunkSize ?? DEFAULT_COMPARE_CHUNK_SIZE,
+    signal: options.signal,
+  });
   const duplicates: DuplicateCandidate[] = [];
 
-  const getAuthoritativeHashIndex = async (
-    size: number,
-  ): Promise<Map<string, WalkedFile[]>> => {
-    const cached = authoritativeHashIndexes.get(size);
-
-    if (cached) {
-      return cached;
-    }
-
-    const filesForSize = authoritativeBySize.get(size) ?? [];
-    const index = new Map<string, WalkedFile[]>();
-
-    report({ phase: 'hashing-authoritative' });
-
+  try {
     await forEachWithConcurrency(
-      filesForSize,
-      hashConcurrency,
-      async (walkedFile) => {
+      candidateCheckFiles,
+      compareConcurrency,
+      async (checkFile) => {
         throwIfAborted(options.signal);
 
         try {
-          const file = await walkedFile.handle.getFile();
+          const checkBlob = await checkFile.handle.getFile();
 
-          if (file.size !== walkedFile.size) {
+          if (checkBlob.size !== checkFile.size) {
             issues.push({
-              scope: 'authoritative',
-              path: walkedFile.path,
+              scope: 'check',
+              path: checkFile.path,
               message: 'File changed during scan and was skipped.',
             });
             return;
           }
 
-          const hash = await hashFile(file, { signal: options.signal });
-          const matchingFiles = index.get(hash) ?? [];
-          matchingFiles.push(walkedFile);
-          index.set(hash, matchingFiles);
+          const sameSizeAuthoritativeFiles =
+            authoritativeBySize.get(checkFile.size) ?? [];
+
+          for (const authoritativeFile of sameSizeAuthoritativeFiles) {
+            throwIfAborted(options.signal);
+            progress.comparedPairs += 1;
+            report({
+              phase: 'comparing',
+              currentPath: `${checkFile.path} vs ${authoritativeFile.path}`,
+            });
+
+            let authoritativeBlob: File;
+
+            try {
+              authoritativeBlob = await authoritativeFile.handle.getFile();
+            } catch (error) {
+              issues.push({
+                scope: 'authoritative',
+                path: authoritativeFile.path,
+                message: toErrorMessage(error),
+              });
+              continue;
+            }
+
+            if (authoritativeBlob.size !== authoritativeFile.size) {
+              issues.push({
+                scope: 'authoritative',
+                path: authoritativeFile.path,
+                message: 'File changed during scan and was skipped.',
+              });
+              continue;
+            }
+
+            const isDuplicate = await comparator.compare(
+              checkBlob,
+              authoritativeBlob,
+            );
+
+            if (isDuplicate) {
+              const authoritativeMatch = {
+                path: authoritativeFile.path,
+                size: authoritativeFile.size,
+              };
+
+              duplicates.push({
+                id: checkFile.path,
+                path: checkFile.path,
+                name: checkFile.name,
+                size: checkFile.size,
+                lastModified: checkFile.lastModified,
+                authoritativePath: authoritativeMatch.path,
+                authoritativeMatches: [authoritativeMatch],
+                checkFile,
+                authoritativeFile,
+              });
+              break;
+            }
+          }
         } catch (error) {
           issues.push({
-            scope: 'authoritative',
-            path: walkedFile.path,
+            scope: 'check',
+            path: checkFile.path,
             message: toErrorMessage(error),
           });
         } finally {
-          progress.hashedAuthoritativeFiles += 1;
+          progress.comparedCheckFiles += 1;
           report({
-            phase: 'hashing-authoritative',
-            currentPath: walkedFile.path,
+            phase: 'comparing',
+            duplicatesFound: duplicates.length,
+            currentPath: checkFile.path,
           });
         }
       },
       options.signal,
     );
-
-    authoritativeHashIndexes.set(size, index);
-    return index;
-  };
-
-  for (const checkFile of candidateCheckFiles) {
-    throwIfAborted(options.signal);
-    const authoritativeHashIndex = await getAuthoritativeHashIndex(
-      checkFile.size,
-    );
-
-    report({
-      phase: 'hashing-check',
-      currentPath: checkFile.path,
-    });
-
-    try {
-      const file = await checkFile.handle.getFile();
-
-      if (file.size !== checkFile.size) {
-        issues.push({
-          scope: 'check',
-          path: checkFile.path,
-          message: 'File changed during scan and was skipped.',
-        });
-        continue;
-      }
-
-      const hash = await hashFile(file, { signal: options.signal });
-      const matches = authoritativeHashIndex.get(hash);
-
-      if (matches && matches.length > 0) {
-        const authoritativeMatches = matches.map((match) => ({
-          path: match.path,
-          size: match.size,
-          hash,
-        }));
-
-        duplicates.push({
-          id: checkFile.path,
-          path: checkFile.path,
-          name: checkFile.name,
-          size: checkFile.size,
-          lastModified: checkFile.lastModified,
-          hash,
-          authoritativePath: authoritativeMatches[0].path,
-          authoritativeMatches,
-          checkFile,
-        });
-      }
-    } catch (error) {
-      issues.push({
-        scope: 'check',
-        path: checkFile.path,
-        message: toErrorMessage(error),
-      });
-    } finally {
-      progress.hashedCheckFiles += 1;
-      report({
-        phase: 'hashing-check',
-        duplicatesFound: duplicates.length,
-        currentPath: checkFile.path,
-      });
-    }
+  } finally {
+    comparator.destroy();
   }
 
   report({
@@ -294,4 +282,3 @@ function groupFilesBySize(files: readonly WalkedFile[]): Map<number, WalkedFile[
 
   return filesBySize;
 }
-

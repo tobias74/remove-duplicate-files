@@ -28,10 +28,10 @@ export class MockFileHandle implements LocalFileHandle {
     }
 
     if (value instanceof Blob) {
-      return new File([value], this.name);
+      return new File([value], this.name, { lastModified: 1 });
     }
 
-    return new File([value], this.name);
+    return new File([value], this.name, { lastModified: 1 });
   }
 
   setSource(source: FileSource): void {

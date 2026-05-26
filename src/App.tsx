@@ -3,7 +3,6 @@ import {
   CheckCircle2,
   FolderOpen,
   Loader2,
-  RefreshCcw,
   ScanSearch,
   ShieldCheck,
   Trash2,
@@ -48,6 +47,7 @@ interface AppState {
   selectedIds: Set<string>;
   issues: ScanIssue[];
   deletionResults: Record<string, DeleteResult>;
+  verifyBeforeDelete: boolean;
   confirmOpen: boolean;
   error?: string;
 }
@@ -62,6 +62,7 @@ type AppAction =
   | { type: 'toggle-selected'; id: string }
   | { type: 'select-all'; ids: string[] }
   | { type: 'clear-selection' }
+  | { type: 'set-verify-before-delete'; value: boolean }
   | { type: 'open-confirm' }
   | { type: 'close-confirm' }
   | { type: 'delete-started' }
@@ -74,6 +75,7 @@ const initialState: AppState = {
   selectedIds: new Set(),
   issues: [],
   deletionResults: {},
+  verifyBeforeDelete: false,
   confirmOpen: false,
 };
 
@@ -175,7 +177,6 @@ export function App() {
         state.checkFolder.handle,
         {
           signal: abortController.signal,
-          hashConcurrency: 2,
           onProgress: (progress) =>
             dispatch({ type: 'scan-progress', progress }),
         },
@@ -217,6 +218,7 @@ export function App() {
       }
 
       const results = await deleteDuplicateFiles(candidatesToDelete, {
+        verifyBeforeDelete: state.verifyBeforeDelete,
         onProgress: ({ result }) =>
           dispatch({ type: 'delete-progress', result }),
       });
@@ -298,6 +300,20 @@ export function App() {
             <Trash2 aria-hidden="true" size={18} />
             <span>Delete selected</span>
           </button>
+          <label className="safety-toggle">
+            <input
+              type="checkbox"
+              checked={state.verifyBeforeDelete}
+              disabled={state.status === 'scanning' || state.status === 'deleting'}
+              onChange={(event) =>
+                dispatch({
+                  type: 'set-verify-before-delete',
+                  value: event.currentTarget.checked,
+                })
+              }
+            />
+            <span>Verify bytes again before deletion</span>
+          </label>
         </section>
 
         {state.error && (
@@ -398,6 +414,11 @@ export function App() {
               {pluralize(selectedCandidates.length, 'file')} totaling{' '}
               {formatBytes(selectedBytes)} will be permanently removed from the
               folder to check.
+            </p>
+            <p className="confirm-note">
+              {state.verifyBeforeDelete
+                ? 'Extra verification is on: selected files will be compared against their authoritative match again before deletion.'
+                : 'Fast deletion is on: selected files will only be checked for size and timestamp changes before deletion.'}
             </p>
             <label className="confirm-check">
               <input
@@ -514,6 +535,11 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return {
         ...state,
         selectedIds: new Set(),
+      };
+    case 'set-verify-before-delete':
+      return {
+        ...state,
+        verifyBeforeDelete: action.value,
       };
     case 'open-confirm':
       return {
@@ -673,8 +699,7 @@ function ProgressPanel({ progress }: { progress: DuplicateScanProgress }) {
     idle: 'Ready',
     'walking-authoritative': 'Reading authoritative folder',
     'walking-check': 'Reading folder to check',
-    'hashing-authoritative': 'Hashing authoritative files',
-    'hashing-check': 'Hashing files to check',
+    comparing: 'Comparing file bytes',
     complete: 'Complete',
   };
 
@@ -685,6 +710,12 @@ function ProgressPanel({ progress }: { progress: DuplicateScanProgress }) {
         <strong>{phaseLabels[progress.phase]}</strong>
       </div>
       {progress.currentPath && <span title={progress.currentPath}>{progress.currentPath}</span>}
+      {progress.phase === 'comparing' && (
+        <span>
+          {progress.comparedCheckFiles.toLocaleString()} checked,{' '}
+          {progress.comparedPairs.toLocaleString()} pair comparisons
+        </span>
+      )}
       <div className="progress-track">
         <div className="progress-bar" />
       </div>
@@ -793,4 +824,3 @@ function StatusPill({ result }: { result?: DeleteResult }) {
     </span>
   );
 }
-
