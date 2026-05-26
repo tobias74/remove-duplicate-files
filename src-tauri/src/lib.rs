@@ -621,6 +621,8 @@ fn clear_cancelled(cancellations: &Arc<Mutex<HashSet<String>>>, request_id: &str
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    apply_linux_webkit_workarounds();
+
     tauri::Builder::default()
         .manage(CancellationState::default())
         .plugin(tauri_plugin_dialog::init())
@@ -631,4 +633,22 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(target_os = "linux")]
+fn apply_linux_webkit_workarounds() {
+    if std::env::var_os("WSL_DISTRO_NAME").is_some() || std::env::var_os("WSL_INTEROP").is_some() {
+        set_default_env("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        set_default_env("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_linux_webkit_workarounds() {}
+
+#[cfg(target_os = "linux")]
+fn set_default_env(key: &str, value: &str) {
+    if std::env::var_os(key).is_none() {
+        std::env::set_var(key, value);
+    }
 }
