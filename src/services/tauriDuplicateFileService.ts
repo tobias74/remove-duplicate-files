@@ -142,10 +142,8 @@ function toNativeDeleteRequest(candidate: DuplicateCandidate) {
   return {
     id: candidate.id,
     path: candidate.path,
-    name: candidate.name,
     size: candidate.size,
     lastModified: candidate.lastModified,
-    authoritativePath: candidate.authoritativePath,
     authoritativeAbsolutePath: candidate.authoritativeAbsolutePath,
   };
 }

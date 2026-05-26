@@ -85,10 +85,8 @@ struct WalkedFile {
 struct DeleteRequest {
     id: String,
     path: String,
-    name: String,
     size: u64,
     last_modified: u64,
-    authoritative_path: String,
     authoritative_absolute_path: Option<String>,
 }
 
@@ -202,10 +200,10 @@ fn scan_duplicates_blocking(
         &authoritative_root,
         "authoritative",
         &mut issues,
-        &mut |path, count| {
+        &mut |path, count, issue_count| {
             progress.authoritative_files = count;
             progress.current_path = path;
-            progress.issues = issues.len();
+            progress.issues = issue_count;
             emit_scan_progress(&window, &progress_event, &progress);
             check_cancelled(&cancellations, &request_id)
         },
@@ -214,13 +212,18 @@ fn scan_duplicates_blocking(
     progress.phase = "walking-check".to_string();
     progress.current_path = None;
     emit_scan_progress(&window, &progress_event, &progress);
-    let check_files = walk_files(&check_root, "check", &mut issues, &mut |path, count| {
-        progress.check_files = count;
-        progress.current_path = path;
-        progress.issues = issues.len();
-        emit_scan_progress(&window, &progress_event, &progress);
-        check_cancelled(&cancellations, &request_id)
-    })?;
+    let check_files = walk_files(
+        &check_root,
+        "check",
+        &mut issues,
+        &mut |path, count, issue_count| {
+            progress.check_files = count;
+            progress.current_path = path;
+            progress.issues = issue_count;
+            emit_scan_progress(&window, &progress_event, &progress);
+            check_cancelled(&cancellations, &request_id)
+        },
+    )?;
 
     let mut authoritative_by_size: HashMap<u64, Vec<WalkedFile>> = HashMap::new();
     for file in &authoritative_files {
@@ -432,7 +435,7 @@ fn walk_files<F>(
     on_progress: &mut F,
 ) -> Result<Vec<WalkedFile>, String>
 where
-    F: FnMut(Option<String>, usize) -> Result<(), String>,
+    F: FnMut(Option<String>, usize, usize) -> Result<(), String>,
 {
     let mut files = Vec::new();
     let mut directories = vec![root.to_path_buf()];
@@ -487,7 +490,7 @@ where
                     size: metadata.len(),
                     last_modified: modified_ms(&metadata),
                 });
-                on_progress(Some(relative_path), files.len())?;
+                on_progress(Some(relative_path), files.len(), issues.len())?;
             }
         }
     }
